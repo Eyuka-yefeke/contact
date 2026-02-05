@@ -160,7 +160,7 @@ export default {
           return null;
         }
       } catch (e) {
-        console.error('Error parsing token for user info', e);
+        console.error('Error parsing token', e);
         return null;
       }
     },
