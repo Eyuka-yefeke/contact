@@ -1,0 +1,24 @@
+table:
+  name: myUsers
+  schema: public
+configuration:
+  column_config: {}
+  custom_column_names: {}
+  custom_name: myUsers
+  custom_root_fields: {}
+object_relationships:
+  - name: contact
+    using:
+      foreign_key_constraint_on:
+        column: crt_id
+        table:
+          name: contacts
+          schema: public
+array_relationships:
+  - name: contacts
+    using:
+      foreign_key_constraint_on:
+        column: crt_id
+        table:
+          name: contacts
+          schema: public

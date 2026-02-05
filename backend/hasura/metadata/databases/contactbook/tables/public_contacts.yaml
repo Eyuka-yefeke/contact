@@ -1,0 +1,51 @@
+table:
+  name: contacts
+  schema: public
+configuration:
+  column_config: {}
+  custom_column_names: {}
+  custom_name: contacts
+  custom_root_fields: {}
+object_relationships:
+  - name: myUser
+    using:
+      foreign_key_constraint_on: crt_id
+insert_permissions:
+  - role: user
+    permission:
+      check: {}
+      set:
+        crt_id: X-Hasura-User-Id
+        crt_name: X-Hasura-User-Name
+      columns:
+        - name
+        - phone
+select_permissions:
+  - role: user
+    permission:
+      columns:
+        - id
+        - name
+        - phone
+        - crt_id
+        - crt_name
+        - created_at
+      filter:
+        crt_id:
+          _eq: X-Hasura-User-Id
+update_permissions:
+  - role: user
+    permission:
+      columns:
+        - name
+        - phone
+      filter:
+        crt_id:
+          _eq: X-Hasura-User-Id
+      check: null
+delete_permissions:
+  - role: user
+    permission:
+      filter:
+        crt_id:
+          _eq: X-Hasura-User-Id

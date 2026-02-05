@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  contact_express:
+    network_mode: host
+    container_name: contact_express
+    build:
+      dockerfile: express.dockerfile
+      context: .
+      args:
+        EXPRESS_PORT: ${EXPRESS_PORT}
+    volumes: 
+      - ${LOCAL_UPLOADED_PATH}:/usr/src/app/docker-uploads
+    restart: always
+    environment:
+      - EXPRESS_PORT=${EXPRESS_PORT}
+      - HASURA_GRAPHQL_URL=${HASURA_GRAPHQL_URL}
+      # - SETTING_HASURA_GRAPHQL_URL=${SETTING_HASURA_GRAPHQL_URL}
+      # - FINANCE_HASURA_GRAPHQL_URL=${FINANCE_HASURA_GRAPHQL_URL}
+      # - LABORATORY_HASURA_GRAPHQL_URL=${LABORATORY_HASURA_GRAPHQL_URL}
+      - IMAGING_HASURA_GRAPHQL_URL=${IMAGING_HASURA_GRAPHQL_URL}
+      # - PHARMACY_HASURA_GRAPHQL_URL=${PHARMACY_HASURA_GRAPHQL_URL}
+      - HASURA_GRAPHQL_ADMIN_SECRET=${HASURA_GRAPHQL_ADMIN_SECRET}
+      - NODE_ENV=${NODE_ENV:-development}
+      # - LOCAL_UPLOADED_PATH=${LOCAL_UPLOADED_PATH}
+      # - FINANCE_BASE_URL=${FINANCE_BASE_URL}
+
+  contact_graphql_engine:
+    container_name: contact_graphql_engine
+    network_mode: host
+    image: hasura/graphql-engine:v2.46.0
+    restart: always
+    depends_on:
+      - "contact_express"
+    environment:
+      HASURA_GRAPHQL_DATABASE_URL: ${POSTGRES_URI}
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "false"
+      HASURA_GRAPHQL_ADMIN_SECRET: ${HASURA_GRAPHQL_ADMIN_SECRET}
+      HASURA_GRAPHQL_ENABLE_TELEMETRY: "false"
+      HASURA_GRAPHQL_CORS_DOMAIN: "*"
+      HASURA_GRAPHQL_JWT_SECRET: ${HASURA_GRAPHQL_JWT_SECRET}
+      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: anonymous
+      HASURA_GRAPHQL_SERVER_PORT: ${HASURA_GRAPHQL_SERVER_PORT}
+      # HASURA_ACTION_SECRET: ${HASURA_ACTION_SECRET}
+      HASURA_GRAPHQL_DEV_MODE: "true"
+      ACTION_BASE_URL: http://localhost:${EXPRESS_PORT}

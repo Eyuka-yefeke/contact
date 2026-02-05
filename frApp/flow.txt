@@ -1,0 +1,141 @@
+Project Workflow — Contact App
+=================================
+
+Overview
+--------
+This document explains how the pieces in this repository work together: frontend (Nuxt + Vue + Apollo), backend auth servers (Express), Hasura GraphQL Engine, and Postgres. It lists key files and describes the runtime flows for login, JWT creation, GraphQL requests, permissions, and CRUD on `contacts`.
+
+High-level architecture
+-----------------------
+- Frontend (frApp): Nuxt/Vue app using Apollo Client to call Hasura GraphQL. It authenticates via the Express auth endpoints and stores a JWT in `localStorage` (key `token`).
+- Backend auth (backend/server.js and frApp/backend/server.js): small Express services that validate credentials (or register users), issue a signed JWT containing Hasura claims, and return the token to the frontend.
+- Hasura GraphQL Engine: exposes a Postgres-backed GraphQL API. It enforces row-level permissions configured in metadata, and uses JWT claims (mapped to session variables) to authorize and to auto-set creator fields on inserts.
+- Postgres: stores tables `myUsers`, `contacts`, and others; migrations manage schema changes.
+
+Important files and responsibilities
+----------------------------------
+- frApp/pages/login.vue
+  - Page that renders the login form (`components/LoginForm.vue`) and redirects to `/dashboard` after successful login.
+
+- frApp/components/LoginForm.vue
+  - Sends credentials to auth endpoint (`/api/auth/login`) on the backend, receives the JWT, stores it in `localStorage` (and optionally sets axios default headers), and emits `logged-in` so the page can redirect.
+
+- frApp/pages/dashboard.vue
+  - Protected page (uses `middleware/auth.js`) that fetches and displays the user's contacts.
+  - Contains logic to decode the JWT locally (`parseToken()`), extract `x-hasura-user-id` and `x-hasura-user-name` from the Hasura claims payload, and pass `crt_id` to queries.
+  - Uses Apollo GraphQL queries/mutations (`contacts`, `insert_contacts_one`, `update_contacts_by_pk`, `delete_contacts_by_pk`) to interact with Hasura.
+  - Contains a `logout()` method that clears `localStorage.token` and redirects to `/login`.
+
+- frApp/middleware/auth.js
+  - Nuxt middleware that prevents access to protected routes if no token exists in `localStorage` (client-side). If token missing, redirects to `/login`.
+
+- frApp/plugins/apollo-client.js (or similar)
+  - Configures Apollo Client: sets the `httpEndpoint` to the Hasura GraphQL endpoint and includes the JWT Authorization header for requests (reads token from `localStorage` or cookies).
+
+- frApp/components/ContactList.vue, ContactDetails.vue, ContactForm.vue
+  - UI components for listing, showing, editing, and creating contacts. They emit events handled by `dashboard.vue` which then performs GraphQL operations.
+
+- backend/server.js and frApp/backend/server.js
+  - Express servers implementing `/api/auth/register` and `/api/auth/login`.
+  - They validate credentials (either against Postgres or via Hasura/admin API depending on implementation), then create a JWT signed with `JWT_SECRET` including the Hasura claims under `https://hasura.io/jwt/claims`:
+    - `x-hasura-default-role`: typically `user`
+    - `x-hasura-allowed-roles`: list (e.g., `['user']`)
+    - `x-hasura-user-id`: the user's id from `myUsers.id` (string/uuid)
+    - `x-hasura-user-name`: the user's username
+  - The backend returns the token to the frontend which stores it.
+
+- backend/hasura/
+  - `config.yaml`, `metadata/`, and `migrations/` contain the Hasura project configuration, metadata (table permissions, relationships), and SQL migrations. `package.json` scripts use `hasura` CLI to run the console and apply metadata.
+
+- backend/.env and backend/docker-compose.yml
+  - Environment variables for Hasura and Postgres. Key item: `HASURA_GRAPHQL_JWT_SECRET` must be set (JSON shape) so Hasura can validate incoming JWTs and map claims to session variables. Example:
+    {
+      "type": "HS256",
+      "key": "<JWT_SECRET>"
+    }
+
+- Postgres (migrations)
+  - Migrations live under `backend/hasura/migrations` (and backups in `migrations_old`). They create/edit tables such as `contacts` and `myUsers`, add indexes, FKs, and alter column types. Recent migrations added an `id uuid` primary key to `contacts`, converted `crt_id` to uuid, created FK `contacts.crt_id -> myUsers.id`, and created indexes on `crt_id`.
+
+How authentication and authorization work (detailed flow)
+------------------------------------------------------
+1) User opens the frontend and navigates to `/login`.
+2) The user submits username/password via `LoginForm.vue`.
+3) Frontend performs an HTTP POST to your auth server (e.g., `http://localhost:5053/api/auth/login`).
+   - The auth server validates credentials (either by querying `myUsers` in Postgres or via Hasura admin API). If valid, it builds a JWT payload that includes both standard claims (sub, iat, exp) and the Hasura claims object under the key `https://hasura.io/jwt/claims`.
+   - The Hasura claims MUST include `x-hasura-default-role`, `x-hasura-allowed-roles`, and `x-hasura-user-id`. Optionally include `x-hasura-user-name`.
+   - The server signs the JWT with `JWT_SECRET` and returns it to the frontend.
+4) The frontend stores the JWT (commonly in `localStorage.token`) and configures Apollo/axios to send `Authorization: Bearer <token>` with subsequent requests.
+5) When the frontend issues a GraphQL request to Hasura (via Apollo), Hasura receives the JWT and verifies it using `HASURA_GRAPHQL_JWT_SECRET` (must match the signing secret). After verification, Hasura maps claims into session variables: `X-Hasura-User-Id`, etc.
+6) Hasura enforces permissions configured in metadata. Example for `contacts`:
+   - `select` permission filters rows where `crt_id = X-Hasura-User-Id` so users only see their contacts.
+   - `insert` permission can use a `set` clause to automatically set `crt_id: X-Hasura-User-Id` and `crt_name: X-Hasura-User-Name` so the client does not have to send these fields.
+   - `update`/`delete` permissions commonly restrict changes to rows where `crt_id = X-Hasura-User-Id`.
+
+CRUD example flows
+------------------
+- Fetch contacts (frontend -> Hasura):
+  1. `dashboard.vue` decodes the token locally to get `currentUserId` (optional — mainly for client filtering).
+  2. It runs GraphQL query `contacts(where: { crt_id: {_eq: $crt_id}})` (variable type `uuid`). Apollo sets Authorization header with the JWT.
+  3. Hasura receives the request, validates JWT, maps `x-hasura-user-id` to `X-Hasura-User-Id`, applies permission filters, and returns rows for that user.
+
+- Insert contact (frontend -> Hasura):
+  1. Frontend calls `insert_contacts_one(object: { name: $name, phone: $phone })` without `crt_id`.
+  2. Hasura checks the `insert` permission for role `user` and applies `set: { crt_id: X-Hasura-User-Id, crt_name: X-Hasura-User-Name }` automatically.
+  3. DB writes a row with `crt_id` referencing `myUsers.id` and returns the inserted row.
+
+- Update/delete contact
+  - Frontend calls `update_contacts_by_pk` or `delete_contacts_by_pk`. Hasura checks update/delete permissions that filter by `crt_id = X-Hasura-User-Id`, preventing users from changing others' rows.
+
+Hasura metadata and migration notes
+----------------------------------
+- Metadata lives in `backend/hasura/metadata/databases/contactbook/tables/public_contacts.yaml` and similar files. This is where the permissions are defined and applied via `hasura metadata apply`.
+- Use the Hasura CLI (scripts in `backend/package.json`) to run the console, apply metadata, and run migrations. The `yarn console` script runs the hasura CLI with `--project hasura --envfile ../.env` so the environment variables in `backend/.env` are used by CLI commands.
+- When upgrading Hasura project versions (v2 → v3 layout), the CLI may move migrations/metadata to new paths and require renaming or backing up old folders. Keep backups in `migrations_old` if you need to inspect previous SQL.
+
+Where to look for things when debugging
+--------------------------------------
+- If JWT mapping seems missing: check `backend/.env` and `docker-compose.yml` for `HASURA_GRAPHQL_JWT_SECRET` and ensure Hasura was restarted after the change.
+- If a GraphQL query shows `no_queries_available` or fields missing: the role mapping may not be applied (invalid JWT or missing secret). Re-check the token, signature algorithm, and Hasura secret.
+- If inserts fail with uniqueness/PK errors: inspect Postgres schema in migrations (`backend/hasura/migrations*`) — keys/indexes may have been set (e.g., `phone` was previously the PK and was migrated to `id` uuid). You can apply migrations with the Hasura CLI or run SQL directly against Postgres.
+- To view current Hasura metadata and permissions: open `backend/hasura/metadata/` files or use the Hasura Console (yarn console) and the Data/Permissions UI.
+
+Developer workflows
+-------------------
+- Local development:
+  1. Start Postgres and Hasura (via `docker-compose` in `backend/` if configured).
+  2. Ensure `backend/.env` contains DB connection and `HASURA_GRAPHQL_JWT_SECRET` matching your auth server `JWT_SECRET`.
+  3. Run `yarn` in `frApp` and `backend` as needed; run Nuxt dev server in `frApp` (`yarn dev` or `yarn start`) and the auth server (`node backend/server.js` or run via npm script).
+  4. Use the Hasura Console (`yarn console` from `backend`) to inspect schema, apply metadata, and run migrations.
+
+- Deploy/production notes:
+  - Use a secure, strong `JWT_SECRET` and store it safely (secrets manager / env vars).
+  - Configure `HASURA_GRAPHQL_JWT_SECRET` in Hasura deployment so claims validate.
+  - Use HTTPS and secure cookie/headers if storing tokens in cookies.
+
+Quick checklist (important files to inspect)
+-----------------------------------------
+- Frontend
+  - frApp/pages/login.vue
+  - frApp/components/LoginForm.vue
+  - frApp/pages/dashboard.vue
+  - frApp/components/ContactList.vue, ContactDetails.vue, ContactForm.vue
+  - frApp/middleware/auth.js
+  - frApp/plugins/apollo-client.js (Apollo setup)
+
+- Backend
+  - backend/server.js
+  - frApp/backend/server.js (if separate auth server used by frApp)
+  - backend/.env (JWT secret and DB URI)
+
+- Hasura and DB
+  - backend/docker-compose.yml (services: hasura, postgres)
+  - backend/hasura/config.yaml (Hasura project config)
+  - backend/hasura/metadata/ (permissions, relationships)
+  - backend/hasura/migrations/ (SQL schema changes)
+
+If you want, I can:
+- Expand any section above with code excerpts and exact file line references.
+- Generate a small sequence diagram or a short README.md summarizing the runtime request flows.
+
+End of workflow document.
